@@ -1,0 +1,131 @@
+name: sync-upstream-release
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: router-for-me/CLIProxyAPI
+  UPSTREAM_BRANCH: main
+  CUSTOM_BRANCH: custom
+  # The fork currently starts from the upstream v7.2.146 release line. Older
+  # upstream tags are intentionally not rebuilt during the first sync run.
+  BASELINE_UPSTREAM_TAG: v7.2.146
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.sync.outputs.should_build }}
+      version: ${{ steps.sync.outputs.version }}
+      commit: ${{ steps.sync.outputs.commit }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Sync the next upstream release
+        id: sync
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --prune upstream \
+            "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}" \
+            '+refs/tags/v*:refs/remotes/upstream/tags/v*'
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+          git fetch origin "+refs/heads/${CUSTOM_BRANCH}:refs/remotes/origin/${CUSTOM_BRANCH}" || true
+
+          mapfile -t upstream_tags < <(git for-each-ref \
+            --format='%(refname:strip=5)' \
+            --sort=version:refname \
+            'refs/remotes/upstream/tags/v*')
+          mapfile -t fork_tags < <(git ls-remote --tags --refs origin 'refs/tags/v*' | \
+            awk '{sub("refs/tags/", "", $2); print $2}')
+
+          pending_tag=''
+          baseline_seen='false'
+          for tag in "${upstream_tags[@]}"; do
+            if [[ "${baseline_seen}" != 'true' ]]; then
+              if [[ "${tag}" == "${BASELINE_UPSTREAM_TAG}" ]]; then
+                baseline_seen='true'
+              fi
+              continue
+            fi
+            if ! printf '%s\n' "${fork_tags[@]}" | grep -Fqx "${tag}"; then
+              pending_tag="${tag}"
+              break
+            fi
+          done
+
+          if [[ "${baseline_seen}" != 'true' ]]; then
+            echo "Baseline tag ${BASELINE_UPSTREAM_TAG} was not found upstream."
+            exit 1
+          fi
+
+          if [[ -z "${pending_tag}" ]]; then
+            echo 'No new upstream release tag.'
+            echo 'should_build=false' >> "${GITHUB_OUTPUT}"
+            echo 'version=' >> "${GITHUB_OUTPUT}"
+            echo 'commit=' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          upstream_ref="refs/remotes/upstream/tags/${pending_tag}"
+          upstream_commit="$(git rev-parse "${upstream_ref}^{commit}")"
+          echo "Processing ${pending_tag} at upstream commit ${upstream_commit}."
+
+          git checkout -B main refs/remotes/origin/main
+          if ! git merge --no-edit --no-ff "${upstream_commit}"; then
+            git merge --abort || true
+            echo "Merge conflict while updating main to upstream ${pending_tag}; no image will be built."
+            exit 1
+          fi
+          git push origin main
+
+          if git show-ref --verify --quiet "refs/remotes/origin/${CUSTOM_BRANCH}"; then
+            git checkout -B "${CUSTOM_BRANCH}" "refs/remotes/origin/${CUSTOM_BRANCH}"
+          else
+            git checkout -B "${CUSTOM_BRANCH}" main
+          fi
+
+          if ! git merge --no-edit main; then
+            git merge --abort || true
+            echo "Merge conflict while bringing main into ${CUSTOM_BRANCH}; no image will be built."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --refs origin "refs/tags/${pending_tag}" >/dev/null 2>&1; then
+            echo "Tag ${pending_tag} appeared while this run was processing; refusing to overwrite it."
+            exit 1
+          fi
+
+          custom_commit="$(git rev-parse HEAD)"
+          git tag -a "${pending_tag}" -m "Custom build based on upstream ${pending_tag} (${upstream_commit})"
+          git push --atomic origin "${CUSTOM_BRANCH}" "refs/tags/${pending_tag}"
+
+          echo "should_build=true" >> "${GITHUB_OUTPUT}"
+          echo "version=${pending_tag}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${custom_commit}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.should_build == 'true'
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      version: ${{ needs.sync.outputs.version }}
+      commit: ${{ needs.sync.outputs.commit }}
+    secrets: inherit
