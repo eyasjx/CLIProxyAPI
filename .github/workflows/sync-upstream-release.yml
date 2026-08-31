@@ -108,14 +108,8 @@ jobs:
             exit 1
           fi
 
-          if git ls-remote --exit-code --refs origin "refs/tags/${pending_tag}" >/dev/null 2>&1; then
-            echo "Tag ${pending_tag} appeared while this run was processing; refusing to overwrite it."
-            exit 1
-          fi
-
           custom_commit="$(git rev-parse HEAD)"
-          git tag -a "${pending_tag}" -m "Custom build based on upstream ${pending_tag} (${upstream_commit})"
-          git push --atomic origin "${CUSTOM_BRANCH}" "refs/tags/${pending_tag}"
+          git push origin "${CUSTOM_BRANCH}"
 
           echo "should_build=true" >> "${GITHUB_OUTPUT}"
           echo "version=${pending_tag}" >> "${GITHUB_OUTPUT}"
@@ -129,3 +123,31 @@ jobs:
       version: ${{ needs.sync.outputs.version }}
       commit: ${{ needs.sync.outputs.commit }}
     secrets: inherit
+
+  tag:
+    needs:
+      - sync
+      - build
+    if: needs.sync.outputs.should_build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.sync.outputs.commit }}
+
+      - name: Create the fork release tag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag="${{ needs.sync.outputs.version }}"
+          commit="${{ needs.sync.outputs.commit }}"
+          if git ls-remote --exit-code --refs origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists; refusing to overwrite it."
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "${tag}" "${commit}" -m "Custom build based on upstream ${tag}"
+          git push origin "refs/tags/${tag}"
