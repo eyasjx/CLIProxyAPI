@@ -293,6 +293,68 @@ func TestConvertOpenAIRequestToAntigravityThinkingAliases(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToAntigravityMapsThinkingType(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             string
+		wantLevel        string
+		wantInclude      bool
+		wantIncludeExist bool
+	}{
+		{
+			name:             "enabled defaults to high and includes thoughts",
+			body:             `{"model":"gemini-3.6-flash-high","thinking":{"type":"enabled"}}`,
+			wantLevel:        "high",
+			wantInclude:      true,
+			wantIncludeExist: true,
+		},
+		{
+			name:             "disabled uses the lowest supported level and hides thoughts",
+			body:             `{"model":"gemini-3.6-flash-high","thinking":{"type":"disabled"}}`,
+			wantLevel:        "minimal",
+			wantInclude:      false,
+			wantIncludeExist: true,
+		},
+		{
+			name:             "nested extra body thinking type is supported",
+			body:             `{"model":"gemini-3.6-flash-high","extra_body":{"thinking":{"type":"disabled"}}}`,
+			wantLevel:        "minimal",
+			wantInclude:      false,
+			wantIncludeExist: true,
+		},
+		{
+			name:             "explicit reasoning effort wins over enabled type",
+			body:             `{"model":"gemini-3.6-flash-high","reasoning_effort":"low","thinking":{"type":"enabled"}}`,
+			wantLevel:        "low",
+			wantInclude:      true,
+			wantIncludeExist: true,
+		},
+		{
+			name:             "explicit reasoning effort wins over disabled type",
+			body:             `{"model":"gemini-3.6-flash-high","reasoning_effort":"low","thinking":{"type":"disabled"}}`,
+			wantLevel:        "low",
+			wantInclude:      true,
+			wantIncludeExist: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ConvertOpenAIRequestToAntigravity("gemini-3.6-flash-high", []byte(tt.body), false)
+			if got := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != tt.wantLevel {
+				t.Fatalf("thinkingLevel = %q, want %q. Output: %s", got, tt.wantLevel, out)
+			}
+			includeThoughts := gjson.GetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts")
+			if includeThoughts.Exists() != tt.wantIncludeExist {
+				t.Fatalf("includeThoughts exists = %v, want %v. Output: %s", includeThoughts.Exists(), tt.wantIncludeExist, out)
+			}
+			if includeThoughts.Bool() != tt.wantInclude {
+				t.Fatalf("includeThoughts = %v, want %v. Output: %s", includeThoughts.Bool(), tt.wantInclude, out)
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIRequestToAntigravityDeduplicatesAndDisambiguatesTools(t *testing.T) {
 	first := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build"
 	second := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build_logs"

@@ -5,6 +5,7 @@ package chat_completions
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/gemini"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -57,7 +58,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			}
 		}
 	}
-	out = applyOpenAIThinkingCompatibilityToAntigravity(out, rawJSON)
+	out = applyOpenAIThinkingCompatibilityToAntigravity(out, rawJSON, modelName)
 
 	// Temperature/top_p/top_k/max_tokens/max_completion_tokens
 	if tr := gjson.GetBytes(rawJSON, "temperature"); tr.Exists() && tr.Type == gjson.Number {
@@ -516,10 +517,50 @@ func applyOpenAIToolChoiceToAntigravity(out, rawJSON []byte, functionNameMap map
 	return out
 }
 
-func applyOpenAIThinkingCompatibilityToAntigravity(out []byte, rawJSON []byte) []byte {
+func applyOpenAIThinkingCompatibilityToAntigravity(out []byte, rawJSON []byte, modelName string) []byte {
 	out = normalizeAntigravityOpenAIThinkingConfig(out)
+	compatibilityType := ""
+	if !gjson.GetBytes(rawJSON, "reasoning_effort").Exists() {
+		compatibilityType = openAIThinkingType(rawJSON)
+		switch compatibilityType {
+		case "enabled":
+			out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel", string(thinking.LevelHigh))
+			out = setAntigravityOpenAIBoolIfDifferent(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
+		case "disabled":
+			out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel", antigravityOpenAILowestThinkingLevel(modelName))
+			out = setAntigravityOpenAIBoolIfDifferent(out, "request.generationConfig.thinkingConfig.includeThoughts", false)
+		}
+	}
 	config := thinking.ExtractSummaryConfig(rawJSON, "openai")
-	return thinking.ApplySummaryConfig(out, "antigravity", config)
+	out = thinking.ApplySummaryConfig(out, "antigravity", config)
+	if compatibilityType == "disabled" {
+		// A disabled thinking request must not be made visible again by a
+		// contradictory summary/include-thoughts compatibility field.
+		out = setAntigravityOpenAIBoolIfDifferent(out, "request.generationConfig.thinkingConfig.includeThoughts", false)
+	}
+	return out
+}
+
+func openAIThinkingType(rawJSON []byte) string {
+	for _, path := range []string{"thinking.type", "extra_body.thinking.type"} {
+		value := gjson.GetBytes(rawJSON, path)
+		if value.Type == gjson.String {
+			return strings.ToLower(strings.TrimSpace(value.String()))
+		}
+	}
+	return ""
+}
+
+func antigravityOpenAILowestThinkingLevel(modelName string) string {
+	baseModel := thinking.ParseSuffix(modelName).ModelName
+	if modelInfo := registry.LookupModelInfo(baseModel, "antigravity"); modelInfo != nil && modelInfo.Thinking != nil {
+		for _, level := range modelInfo.Thinking.Levels {
+			if normalized := strings.ToLower(strings.TrimSpace(level)); normalized != "" {
+				return normalized
+			}
+		}
+	}
+	return string(thinking.LevelMinimal)
 }
 
 func normalizeAntigravityOpenAIThinkingConfig(out []byte) []byte {
