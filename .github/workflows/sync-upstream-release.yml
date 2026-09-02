@@ -50,7 +50,7 @@ jobs:
           git fetch origin "+refs/heads/${CUSTOM_BRANCH}:refs/remotes/origin/${CUSTOM_BRANCH}" || true
 
           mapfile -t upstream_tags < <(git for-each-ref \
-            --format='%(refname:strip=5)' \
+            --format='%(refname:strip=4)' \
             --sort=version:refname \
             'refs/remotes/upstream/tags/v*')
           mapfile -t fork_tags < <(git ls-remote --tags --refs origin 'refs/tags/v*' | \
