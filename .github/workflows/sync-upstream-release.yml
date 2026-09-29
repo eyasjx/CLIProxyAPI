@@ -33,7 +33,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
-
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          
       - name: Sync the next upstream release
         id: sync
         shell: bash
