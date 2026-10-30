@@ -2,7 +2,7 @@ name: sync-upstream-release
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '37 */2 * * *'
   workflow_dispatch:
 
 permissions:
